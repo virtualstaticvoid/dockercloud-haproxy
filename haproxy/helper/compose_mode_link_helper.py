@@ -2,6 +2,9 @@ import logging
 
 logger = logging.getLogger("haproxy")
 
+def get_compose_delimiter(version):
+    return "-" if version.startswith("2") else "_"
+
 
 def get_compose_mode_links(docker, haproxy_container):
     labels = haproxy_container.get("Config", {}).get("Labels", {})
@@ -9,11 +12,14 @@ def get_compose_mode_links(docker, haproxy_container):
     if not project:
         raise Exception("Cannot read compose labels. Are you using docker compose V2?")
 
+    version = labels.get("com.docker.compose.version", "")
+    delimiter = get_compose_delimiter(version)
+
     networks = haproxy_container.get("NetworkSettings", {}).get("Networks", {})
-    linked_compose_services = _get_linked_compose_services(networks, project)
+    linked_compose_services = _get_linked_compose_services(networks, project, delimiter)
 
     links = _calc_links(docker, linked_compose_services, project)
-    return links, set(["%s_%s" % (project, service) for service in linked_compose_services])
+    return links, set(["%s%s%s" % (project, delimiter, service) for service in linked_compose_services])
 
 
 def get_additional_links(docker, additional_services):
@@ -27,7 +33,7 @@ def get_additional_links(docker, additional_services):
             link = _calc_links(docker, [service], project)
             if link:
                 links.update(link)
-                services.add("%s_%s" % (project, service))
+                services.add(link.service_name)
             else:
                 logger.info("Cannot find the additional service: %s" % additional_service.strip())
     return links, services
@@ -49,9 +55,11 @@ def _calc_links(docker, linked_compose_services, project):
         compose_labels = container.get("Config", {}).get("Labels", {})
         compose_project = compose_labels.get("com.docker.compose.project", "")
         compose_service = compose_labels.get("com.docker.compose.service", "")
+        compose_version = compose_labels.get("com.docker.compose.version", "")
+        delimiter = get_compose_delimiter(compose_version)
 
         if compose_project == project and compose_service in linked_compose_services:
-            service_name = "%s_%s" % (compose_project, compose_service)
+            service_name = "%s%s%s" % (compose_project, delimiter, compose_service)
             container_name = container.get("Name").lstrip("/")
             container_evvvars = get_container_envvars(container)
             endpoints = get_container_endpoints(container, container_name)
@@ -95,8 +103,8 @@ def get_container_envvars(container):
     return container_evvvars
 
 
-def _get_linked_compose_services(networks, project):
-    prefix = "%s_" % project
+def _get_linked_compose_services(networks, project, delimiter='_'):
+    prefix = "%s%s" % (project, delimiter)
     prefix_len = len(prefix)
 
     haproxy_links = []
@@ -110,7 +118,7 @@ def _get_linked_compose_services(networks, project):
         terms = link.strip().split(":")
         service = terms[0].strip()
         if service and service.startswith(prefix):
-            last = service.rfind("_")
+            last = service.rfind(delimiter)
             linked_service = service[prefix_len:last]
             if linked_service not in linked_services:
                 linked_services.append(linked_service)
